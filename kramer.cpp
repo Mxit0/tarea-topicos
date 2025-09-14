@@ -43,7 +43,7 @@ inline uint8_t base_to_bits(char c) {
         case 'C': return 1;
         case 'G': return 2;
         case 'T': return 3;
-        default: return 4; // base inválida (N u otro)
+        default: return 4; // base inválida
     }
 }
 
@@ -63,17 +63,20 @@ string bits_to_sequence(uint64_t kmer, uint k) {
     return seq;
 }
 
-// --- Extraer k-mers canónicos y contarlos ---
-void extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint64_t,uint64_t> &counts) {
+// --- Extraer k-mers canónicos y contarlos, devolviendo N ---
+uint64_t extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint64_t,uint64_t> &counts) {
     ifstream infile(filepath);
     if (!infile) {
         cerr << "No se pudo abrir: " << filepath << endl;
-        return;
+        return 0;
     }
 
     string line, seq;
+    uint64_t N_total = 0;
+
     while (getline(infile, line)) {
         if (line.empty()) continue;
+
         if (line[0] == '>') {
             if (!seq.empty()) {
                 uint64_t kmer = 0;
@@ -85,6 +88,7 @@ void extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint64_t
                     if (++bases >= k) {
                         uint64_t cano = canonical_kmer(kmer, k);
                         counts[cano]++;
+                        N_total++;
                         bases--;
                     }
                 }
@@ -105,25 +109,54 @@ void extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint64_t
             if (++bases >= k) {
                 uint64_t cano = canonical_kmer(kmer, k);
                 counts[cano]++;
+                N_total++;
                 bases--;
             }
         }
     }
+
+    return N_total;
 }
 
-// --- Guardar heavy hitters como secuencias legibles ---
-void save_heavy_hitters(const unordered_map<uint64_t,uint64_t> &counts, double phi, const string &filename, uint k) {
+// --- Guardar heavy hitters como secuencia\tfrecuencia, limitando memoria ~1MB ---
+void save_heavy_hitters(const unordered_map<uint64_t,uint64_t> &counts, double phi, const string &filename, uint k, uint64_t N_total) {
     ofstream out(filename);
-    uint64_t N = 0;
-    for (auto &[kmer, c] : counts) N += c;
-    uint64_t threshold = static_cast<uint64_t>(phi * N);
+    uint64_t threshold = static_cast<uint64_t>(phi * N_total);
+
+    // Calcular cuántos HH superarían el threshold
+    uint64_t HH_count = 0;
+    for (auto &[kmer, c] : counts) {
+        if (c >= threshold) {
+            HH_count++;
+        }
+    }
+
+    // Limitar la memoria a ~1MB (aprox 16 bytes por HH)
+    const uint64_t max_HH_in_memory = 1048576 / 16;
+    if (HH_count > max_HH_in_memory) {
+        // Ordenar frecuencias descendente
+        vector<uint64_t> freqs;
+        for (auto &[kmer, c] : counts) {
+            if (c >= threshold) {
+                freqs.push_back(c);
+            }
+        }
+        sort(freqs.rbegin(), freqs.rend());
+        threshold = freqs[max_HH_in_memory - 1];
+        cout << "Ajustando threshold para limitar HH a ~1MB de memoria: nuevo threshold=" << threshold << endl;
+    }
+
+    out << "# phi=" << phi << " threshold=" << threshold << " N_total=" << N_total << "\n";
 
     for (auto &[kmer, c] : counts) {
         if (c >= threshold) {
-            out << bits_to_sequence(kmer, k) << "\n";
+            string seq = bits_to_sequence(kmer, k);
+            cout << seq << "\t" << c << endl;  // imprime en consola
+            out << seq << "\t" << c << "\n";  // escribe en archivo
         }
     }
 }
+
 
 int main() {
     string folder = "Genomas/";
@@ -135,16 +168,19 @@ int main() {
     cout << "Procesando subconjunto representativo de " << subset_files.size() << " archivos." << endl;
 
     unordered_map<uint64_t,uint64_t> counts21, counts31;
+    uint64_t N21 = 0, N31 = 0;
+
     for (const auto &fp : subset_files) {
         cout << "Procesando: " << fp << endl;
-        extract_kmers_bits(fp, 21, counts21);
-        extract_kmers_bits(fp, 31, counts31);
+        N21 += extract_kmers_bits(fp, 21, counts21);
+        N31 += extract_kmers_bits(fp, 31, counts31);
     }
 
-    double phi = 0; // umbral de heavy hitters
-    save_heavy_hitters(counts21, phi, "heavy_hitters_k21.txt", 21);
-    save_heavy_hitters(counts31, phi, "heavy_hitters_k31.txt", 31);
+    double phi = 1e-7;
 
-    cout << "Heavy hitters guardados" << endl;
+    save_heavy_hitters(counts21, phi, "heavy_hitters_k21.txt", 21, N21);
+    save_heavy_hitters(counts31, phi, "heavy_hitters_k31.txt", 31, N31);
+
+    cout << "Heavy hitters guardados con phi=" << phi << endl;
     return 0;
 }
