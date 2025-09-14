@@ -9,7 +9,7 @@
 namespace fs = std::filesystem;
 using namespace std;
 
-// --- Listar archivos FASTA ---
+// --- Listar archivos ---
 vector<string> list_fasta_files(const string &folder) {
     vector<string> files;
     for (const auto &entry : fs::directory_iterator(folder)) {
@@ -75,19 +75,16 @@ uint64_t extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint
     uint64_t N_total = 0;
 
     while (getline(infile, line)) {
-        if (line.empty()) continue;
-
-        if (line[0] == '>') {
+        if (line[0] == '>') { // línea de encabezado FASTA
             if (!seq.empty()) {
                 uint64_t kmer = 0;
                 size_t bases = 0;
                 for (char c : seq) {
                     uint8_t bits = base_to_bits(c);
-                    if (bits > 3) { kmer = 0; bases = 0; continue; }
-                    kmer = ((kmer << 2) | bits) & ((1ULL << (k*2)) - 1);
+                    if (bits > 3) { kmer = 0; bases = 0; continue; } // reiniciar si base inválida
+                    kmer = ((kmer << 2) | bits) & ((1ULL << (k*2)) - 1); // desplazar bits
                     if (++bases >= k) {
-                        uint64_t cano = canonical_kmer(kmer, k);
-                        counts[cano]++;
+                        counts[canonical_kmer(kmer, k)]++; // contar k-mer canónico
                         N_total++;
                         bases--;
                     }
@@ -99,6 +96,7 @@ uint64_t extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint
         }
     }
 
+    // procesar la última secuencia
     if (!seq.empty()) {
         uint64_t kmer = 0;
         size_t bases = 0;
@@ -107,8 +105,7 @@ uint64_t extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint
             if (bits > 3) { kmer = 0; bases = 0; continue; }
             kmer = ((kmer << 2) | bits) & ((1ULL << (k*2)) - 1);
             if (++bases >= k) {
-                uint64_t cano = canonical_kmer(kmer, k);
-                counts[cano]++;
+                counts[canonical_kmer(kmer, k)]++;
                 N_total++;
                 bases--;
             }
@@ -118,54 +115,29 @@ uint64_t extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint
     return N_total;
 }
 
-// --- Guardar heavy hitters como secuencia\tfrecuencia, limitando memoria ~1MB ---
+// --- Guardar heavy hitters como secuencia\tfrecuencia---
 void save_heavy_hitters(const unordered_map<uint64_t,uint64_t> &counts, double phi, const string &filename, uint k, uint64_t N_total) {
     ofstream out(filename);
-    uint64_t threshold = static_cast<uint64_t>(phi * N_total);
+    uint64_t nivel_minimo = static_cast<uint64_t>(phi * N_total);
 
-    // Calcular cuántos HH superarían el threshold
-    uint64_t HH_count = 0;
+    out << "# phi=" << phi << " nivel_minimo=" << nivel_minimo << " N_total=" << N_total << "\n";
     for (auto &[kmer, c] : counts) {
-        if (c >= threshold) {
-            HH_count++;
-        }
-    }
-
-    // Limitar la memoria a ~1MB (aprox 16 bytes por HH)
-    const uint64_t max_HH_in_memory = 1048576 / 16;
-    if (HH_count > max_HH_in_memory) {
-        // Ordenar frecuencias descendente
-        vector<uint64_t> freqs;
-        for (auto &[kmer, c] : counts) {
-            if (c >= threshold) {
-                freqs.push_back(c);
-            }
-        }
-        sort(freqs.rbegin(), freqs.rend());
-        threshold = freqs[max_HH_in_memory - 1];
-        cout << "Ajustando threshold para limitar HH a ~1MB de memoria: nuevo threshold=" << threshold << endl;
-    }
-
-    out << "# phi=" << phi << " threshold=" << threshold << " N_total=" << N_total << "\n";
-
-    for (auto &[kmer, c] : counts) {
-        if (c >= threshold) {
+        if (c >= nivel_minimo) { // solo guardar heavy hitters
             string seq = bits_to_sequence(kmer, k);
-            cout << seq << "\t" << c << endl;  // imprime en consola
-            out << seq << "\t" << c << "\n";  // escribe en archivo
+            //cout << seq << "\t" << c << endl;  
+            //out << seq << "\t" << c << "\n";  
         }
     }
 }
-
 
 int main() {
     string folder = "Genomas/";
     vector<string> fasta_files = list_fasta_files(folder);
     cout << "Archivos encontrados: " << fasta_files.size() << endl;
 
-    size_t subset_size = min((size_t)10, fasta_files.size());
+    size_t subset_size = min((size_t)20, fasta_files.size());
     vector<string> subset_files(fasta_files.begin(), fasta_files.begin() + subset_size);
-    cout << "Procesando subconjunto representativo de " << subset_files.size() << " archivos." << endl;
+    cout << "Procesando subconjunto de " << subset_files.size() << " archivos." << endl;
 
     unordered_map<uint64_t,uint64_t> counts21, counts31;
     uint64_t N21 = 0, N31 = 0;
