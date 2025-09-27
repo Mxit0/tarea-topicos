@@ -5,8 +5,7 @@
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
-#include <random>
-#include <sys/resource.h>  // Para medir memoria pico
+#include <sys/resource.h> 
 #include <cmath>
 
 namespace fs = std::filesystem;
@@ -134,7 +133,6 @@ void save_heavy_hitters_phi(
         }
     }
 
-    // --- Print detallado por phi ---
     cout << "  [Phi=" << phi << "] k=" << k
          << " | Total k-mers=" << N
          << " | HH encontrados=" << hh_count
@@ -142,7 +140,8 @@ void save_heavy_hitters_phi(
          << " | Guardado en: " << filename << endl;
 }
 
-long get_peak_memory_kb() {
+// Función para medir pico de memoria del proceso
+long report_memory() {
     struct rusage r;
     getrusage(RUSAGE_SELF, &r);
     return r.ru_maxrss;
@@ -157,20 +156,12 @@ int main() {
     vector<string> fasta_files = list_fasta_files(folder);
     cout << "Archivos encontrados: " << fasta_files.size() << endl;
 
-    random_device rd;
-    mt19937 g(rd());
-    shuffle(fasta_files.begin(), fasta_files.end(), g);
-
-    size_t subset_size = min((size_t)20, fasta_files.size());
-    vector<string> subset_files(fasta_files.begin(), fasta_files.begin() + subset_size);
-    cout << "Procesando subconjunto aleatorio de " << subset_files.size() << " archivos." << endl;
-
     unordered_map<uint64_t,uint64_t> counts21, counts31;
     size_t file_counter = 0;
-    for (const auto &fp : subset_files) {
+    for (const auto &fp : fasta_files) {
         file_counter++;
         cout << "------------------------------------------------------------" << endl;
-        cout << "Procesando archivo " << file_counter << "/" << subset_files.size() << ": " << fp << endl;
+        cout << "Procesando archivo " << file_counter << "/" << fasta_files.size() << ": " << fp << endl;
 
         size_t before21 = counts21.size();
         size_t before31 = counts31.size();
@@ -181,9 +172,16 @@ int main() {
         cout << "  -> K=21: Total k-mers únicos hasta ahora: " << counts21.size() << " (+" << counts21.size()-before21 << ")" << endl;
         cout << "  -> K=31: Total k-mers únicos hasta ahora: " << counts31.size() << " (+" << counts31.size()-before31 << ")" << endl;
 
-        long mem_kb = get_peak_memory_kb();
-        cout << "  -> Memoria actual: " << mem_kb/1024.0 << " MB" << endl;
+        long mem_kb = report_memory();
+        cout << "  -> Memoria actual (proceso): " << mem_kb/1024.0 << " MB" << endl;
     }
+
+    // Calcular memoria estimada de las estructuras
+    size_t memory_counts21 = counts21.size() * (sizeof(uint64_t) + sizeof(uint64_t));
+    size_t memory_counts31 = counts31.size() * (sizeof(uint64_t) + sizeof(uint64_t));
+    cout << "------------------------------------------------------------" << endl;
+    cout << "Memoria estimada de counts21: " << memory_counts21 / 1024.0 / 1024.0 << " MB" << endl;
+    cout << "Memoria estimada de counts31: " << memory_counts31 / 1024.0 / 1024.0 << " MB" << endl;
 
     // --- Múltiples phi ---
     vector<double> phi_values = {1e-4, 1e-5, 1e-6, 1e-7, 1e-8};
@@ -195,9 +193,9 @@ int main() {
         save_heavy_hitters_phi(counts31, 31, phi, "output/k31/phi" + to_string(int(-log10(phi))));
     }
 
-    long mem_kb = get_peak_memory_kb();
+    long mem_kb_final = report_memory();
     cout << "------------------------------------------------------------" << endl;
-    cout << "Memoria máxima usada: " << mem_kb/1024.0 << " MB" << endl;
+    cout << "Memoria máxima usada (proceso): " << mem_kb_final/1024.0 << " MB" << endl;
     cout << "Procesamiento completo." << endl;
 
     return 0;
