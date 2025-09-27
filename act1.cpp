@@ -5,11 +5,16 @@
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
+#include <sys/resource.h> 
+#include <cmath>
 
 namespace fs = std::filesystem;
 using namespace std;
 
-// --- Listar archivos FASTA ---
+// ---------------------------
+// Funciones auxiliares
+// ---------------------------
+
 vector<string> list_fasta_files(const string &folder) {
     vector<string> files;
     for (const auto &entry : fs::directory_iterator(folder)) {
@@ -21,7 +26,6 @@ vector<string> list_fasta_files(const string &folder) {
     return files;
 }
 
-// --- Función para obtener k-mer canónico en bits ---
 uint64_t canonical_kmer(uint64_t kmer, uint k = 31) {
     uint64_t reverse = 0;
     uint64_t b_kmer = kmer;
@@ -36,18 +40,16 @@ uint64_t canonical_kmer(uint64_t kmer, uint k = 31) {
     return (b_kmer < reverse) ? b_kmer : reverse;
 }
 
-// --- Convertir base a 2 bits ---
 inline uint8_t base_to_bits(char c) {
     switch(toupper(c)) {
         case 'A': return 0;
         case 'C': return 1;
         case 'G': return 2;
         case 'T': return 3;
-        default: return 4; // base inválida
+        default: return 4; 
     }
 }
 
-// --- Convertir k-mer de bits a secuencia ADN ---
 string bits_to_sequence(uint64_t kmer, uint k) {
     string seq(k, 'N');
     for (int i = k-1; i >= 0; --i) {
@@ -63,20 +65,16 @@ string bits_to_sequence(uint64_t kmer, uint k) {
     return seq;
 }
 
-// --- Extraer k-mers canónicos y contarlos, devolviendo N ---
-uint64_t extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint64_t,uint64_t> &counts) {
+void extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint64_t,uint64_t> &counts) {
     ifstream infile(filepath);
     if (!infile) {
         cerr << "No se pudo abrir: " << filepath << endl;
-        return 0;
+        return;
     }
 
     string line, seq;
-    uint64_t N_total = 0;
-
     while (getline(infile, line)) {
         if (line.empty()) continue;
-
         if (line[0] == '>') {
             if (!seq.empty()) {
                 uint64_t kmer = 0;
@@ -88,7 +86,6 @@ uint64_t extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint
                     if (++bases >= k) {
                         uint64_t cano = canonical_kmer(kmer, k);
                         counts[cano]++;
-                        N_total++;
                         bases--;
                     }
                 }
@@ -109,78 +106,97 @@ uint64_t extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint
             if (++bases >= k) {
                 uint64_t cano = canonical_kmer(kmer, k);
                 counts[cano]++;
-                N_total++;
                 bases--;
             }
         }
     }
-
-    return N_total;
 }
 
-// --- Guardar heavy hitters como secuencia\tfrecuencia, limitando memoria ~1MB ---
-void save_heavy_hitters(const unordered_map<uint64_t,uint64_t> &counts, double phi, const string &filename, uint k, uint64_t N_total) {
+void save_heavy_hitters_phi(
+    const unordered_map<uint64_t,uint64_t> &counts, uint k,
+    double phi, const string &out_folder)
+{
+    fs::create_directories(out_folder);
+    string filename = out_folder + "/HH_k" + to_string(k) + ".txt";
     ofstream out(filename);
-    uint64_t threshold = static_cast<uint64_t>(phi * N_total);
 
-    // Calcular cuántos HH superarían el threshold
-    uint64_t HH_count = 0;
+    uint64_t N = 0;
+    for (auto &[kmer, c] : counts) N += c;
+    uint64_t threshold = static_cast<uint64_t>(phi * N);
+    size_t hh_count = 0;
+
+    out << "#Heavy hitters k=" << k << " (threshold=" << threshold << ")\n";
     for (auto &[kmer, c] : counts) {
         if (c >= threshold) {
-            HH_count++;
+            out << bits_to_sequence(kmer, k) << "\t" << c << "\n";
+            hh_count++;
         }
     }
 
-    // Limitar la memoria a ~1MB (aprox 16 bytes por HH)
-    const uint64_t max_HH_in_memory = 1048576 / 16;
-    if (HH_count > max_HH_in_memory) {
-        // Ordenar frecuencias descendente
-        vector<uint64_t> freqs;
-        for (auto &[kmer, c] : counts) {
-            if (c >= threshold) {
-                freqs.push_back(c);
-            }
-        }
-        sort(freqs.rbegin(), freqs.rend());
-        threshold = freqs[max_HH_in_memory - 1];
-        cout << "Ajustando threshold para limitar HH a ~1MB de memoria: nuevo threshold=" << threshold << endl;
-    }
-
-    out << "# phi=" << phi << " threshold=" << threshold << " N_total=" << N_total << "\n";
-
-    for (auto &[kmer, c] : counts) {
-        if (c >= threshold) {
-            string seq = bits_to_sequence(kmer, k);
-            cout << seq << "\t" << c << endl;  // imprime en consola
-            out << seq << "\t" << c << "\n";  // escribe en archivo
-        }
-    }
+    cout << "  [Phi=" << phi << "] k=" << k
+         << " | Total k-mers=" << N
+         << " | HH encontrados=" << hh_count
+         << " | Threshold=" << threshold
+         << " | Guardado en: " << filename << endl;
 }
 
+// Función para medir pico de memoria del proceso
+long report_memory() {
+    struct rusage r;
+    getrusage(RUSAGE_SELF, &r);
+    return r.ru_maxrss;
+}
+
+// ---------------------------
+// Programa principal
+// ---------------------------
 
 int main() {
     string folder = "Genomas/";
     vector<string> fasta_files = list_fasta_files(folder);
     cout << "Archivos encontrados: " << fasta_files.size() << endl;
 
-    size_t subset_size = min((size_t)10, fasta_files.size());
-    vector<string> subset_files(fasta_files.begin(), fasta_files.begin() + subset_size);
-    cout << "Procesando subconjunto representativo de " << subset_files.size() << " archivos." << endl;
-
     unordered_map<uint64_t,uint64_t> counts21, counts31;
-    uint64_t N21 = 0, N31 = 0;
+    size_t file_counter = 0;
+    for (const auto &fp : fasta_files) {
+        file_counter++;
+        cout << "------------------------------------------------------------" << endl;
+        cout << "Procesando archivo " << file_counter << "/" << fasta_files.size() << ": " << fp << endl;
 
-    for (const auto &fp : subset_files) {
-        cout << "Procesando: " << fp << endl;
-        N21 += extract_kmers_bits(fp, 21, counts21);
-        N31 += extract_kmers_bits(fp, 31, counts31);
+        size_t before21 = counts21.size();
+        size_t before31 = counts31.size();
+
+        extract_kmers_bits(fp, 21, counts21);
+        extract_kmers_bits(fp, 31, counts31);
+
+        cout << "  -> K=21: Total k-mers únicos hasta ahora: " << counts21.size() << " (+" << counts21.size()-before21 << ")" << endl;
+        cout << "  -> K=31: Total k-mers únicos hasta ahora: " << counts31.size() << " (+" << counts31.size()-before31 << ")" << endl;
+
+        long mem_kb = report_memory();
+        cout << "  -> Memoria actual (proceso): " << mem_kb/1024.0 << " MB" << endl;
     }
 
-    double phi = 1e-7;
+    // Calcular memoria estimada de las estructuras
+    size_t memory_counts21 = counts21.size() * (sizeof(uint64_t) + sizeof(uint64_t));
+    size_t memory_counts31 = counts31.size() * (sizeof(uint64_t) + sizeof(uint64_t));
+    cout << "------------------------------------------------------------" << endl;
+    cout << "Memoria estimada de counts21: " << memory_counts21 / 1024.0 / 1024.0 << " MB" << endl;
+    cout << "Memoria estimada de counts31: " << memory_counts31 / 1024.0 / 1024.0 << " MB" << endl;
 
-    save_heavy_hitters(counts21, phi, "heavy_hitters_k21.txt", 21, N21);
-    save_heavy_hitters(counts31, phi, "heavy_hitters_k31.txt", 31, N31);
+    // --- Múltiples phi ---
+    vector<double> phi_values = {1e-4, 1e-5, 1e-6, 1e-7, 1e-8};
+    for (double phi : phi_values) {
+        cout << "============================================================" << endl;
+        cout << "Guardando HH para phi=" << phi << endl;
 
-    cout << "Heavy hitters guardados con phi=" << phi << endl;
+        save_heavy_hitters_phi(counts21, 21, phi, "output/k21/phi" + to_string(int(-log10(phi))));
+        save_heavy_hitters_phi(counts31, 31, phi, "output/k31/phi" + to_string(int(-log10(phi))));
+    }
+
+    long mem_kb_final = report_memory();
+    cout << "------------------------------------------------------------" << endl;
+    cout << "Memoria máxima usada (proceso): " << mem_kb_final/1024.0 << " MB" << endl;
+    cout << "Procesamiento completo." << endl;
+
     return 0;
 }
