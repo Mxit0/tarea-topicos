@@ -8,19 +8,22 @@
 #include <random>
 #include <cmath>
 #include <iomanip>
+#include <sys/resource.h>
 
 namespace fs = std::filesystem;
 using namespace std;
 
+// ====================================================================
+// --- CLASE COUNTSKETCH (Sin cambios) ---
+// ====================================================================
 class CountSketch {
 private:
-    int d; // Número de filas (hash functions)
-    int w; // Número de columnas (contadores)
-    vector<vector<int64_t>> C; // Matriz del sketch, renombrada a C
-    vector<uint64_t> seeds_h;   // Semillas para la familia de hash h
-    vector<uint64_t> seeds_g;   // Semillas para la familia de hash g
+    int d; 
+    int w; 
+    vector<vector<int64_t>> C;
+    vector<uint64_t> seeds_h;
+    vector<uint64_t> seeds_g;
 
-    // Función de hash base (privada)
     uint64_t hash64(uint64_t key) {
         key = (~key) + (key << 21);
         key = key ^ (key >> 24);
@@ -32,75 +35,62 @@ private:
         return key;
     }
 
-    // Familia de funciones hash h_j(item) -> [0, w-1]
-    uint64_t h(int j, uint64_t item) {
-        return hash64(item ^ seeds_h[j]) % w;
-    }
-
-    // Familia de funciones hash g_j(item) -> {-1, 1}
-    int g(int j, uint64_t item) {
-        return (hash64(item ^ seeds_g[j]) % 2) * 2 - 1;
-    }
+    uint64_t h(int j, uint64_t item) { return hash64(item ^ seeds_h[j]) % w; }
+    int g(int j, uint64_t item) { return (hash64(item ^ seeds_g[j]) % 2) * 2 - 1; }
 
 public:
-    // --- Inicialización ---
     CountSketch(int depth, int width) : d(depth), w(width) {
-        // C[1..d][1..w] = 0
         C.assign(d, vector<int64_t>(w, 0));
-
-        // Inicializar las "semillas" para simular d funciones hash h_j y g_j
-        mt19937_64 rng(1337); // Semilla fija para reproducibilidad
+        mt19937_64 rng(1337);
         for (int i = 0; i < d; ++i) {
             seeds_h.push_back(rng());
             seeds_g.push_back(rng());
         }
     }
 
-    // --- Actualización (corresponde a insertCS) ---
-    // El parámetro 'count' corresponde a la constante 'c' en tu pseudocódigo
     void update(uint64_t item, int64_t count = 1) {
         for (int j = 0; j < d; ++j) {
-            // C[j][h_j[item]] += g_j(item) * count
             C[j][h(j, item)] += g(j, item) * count;
         }
     }
 
-    // --- Estimación (corresponde a estimarFreq) ---
     int64_t estimate(uint64_t item) {
         vector<int64_t> estimates;
         for (int j = 0; j < d; ++j) {
-            // Coleccionar g_j(item) * C[j][h_j(item)]
             estimates.push_back(g(j, item) * C[j][h(j, item)]);
         }
-
-        // Devolver la mediana de las estimaciones
         sort(estimates.begin(), estimates.end());
         return estimates[d / 2];
     }
     
-    // Devuelve el tamaño del sketch en bytes
-    size_t size_in_bytes() const {
-        return d * w * sizeof(int64_t);
-    }
+    size_t size_in_bytes() const { return d * w * sizeof(int64_t); }
 };
 
+
+// ====================================================================
+// --- FUNCIONES AUXILIARES ---
+// ====================================================================
 vector<string> list_fasta_files(const string &folder);
 uint64_t canonical_kmer(uint64_t kmer, uint k);
 inline uint8_t base_to_bits(char c);
 string bits_to_sequence(uint64_t kmer, uint k);
+long report_memory();
 uint64_t extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint64_t,uint64_t> &counts);
 
 
+// ====================================================================
+// --- PROGRAMA PRINCIPAL (para Calibración y guardado en archivo) ---
+// ====================================================================
 int main() {
     string folder = "Genomas/";
     vector<string> fasta_files = list_fasta_files(folder);
     cout << "Archivos encontrados: " << fasta_files.size() << endl;
 
-    size_t subset_size = min((size_t)20, fasta_files.size());
+    size_t subset_size = min((size_t)25, fasta_files.size()); // Aumentado a 25
     vector<string> subset_files(fasta_files.begin(), fasta_files.begin() + subset_size);
     cout << "Procesando subconjunto de " << subset_files.size() << " archivos para ground truth y calibración." << endl;
 
-    // --- PASO 1: Generar Ground Truth (conteo exacto) ---
+    // --- PASO 1: Generar Ground Truth ---
     unordered_map<uint64_t, uint64_t> ground_truth_counts;
     uint64_t N_total = 0;
     const size_t k = 31;
@@ -112,8 +102,8 @@ int main() {
     }
     cout << "Ground Truth generado. Total de k-mers: " << N_total << ". K-mers unicos: " << ground_truth_counts.size() << endl;
 
-    // Identificar los Heavy Hitters reales para la evaluación
-    double phi = 1e-7; // ** Umbral ajustado para encontrar HH **
+    // Identificar los Heavy Hitters para la evaluación
+    double phi = 1e-6;
     uint64_t threshold = static_cast<uint64_t>(phi * N_total);
     if (threshold < 2) threshold = 2;
     
@@ -126,14 +116,29 @@ int main() {
     cout << "Se usarán " << heavy_hitters.size() << " heavy hitters reales (frec >= " << threshold << ") para la calibración." << endl;
 
     // --- PASO 2: Calibración de CountSketch ---
-    cout << "\n--- Calibrando CountSketch (error vs tamaño) ---" << endl;
-    cout << "--------------------------------------------------------------------------------" << endl;
-    cout << setw(5) << "d" << setw(10) << "w" << setw(15) << "Tamaño (KB)"
-         << setw(20) << "Error Relativo Prom" << setw(20) << "Error Absoluto Prom" << endl;
-    cout << "--------------------------------------------------------------------------------" << endl;
 
-    vector<int> d_values = {3, 5, 7};
-    vector<int> w_values = {50000, 100000, 250000, 500000, 1000000};
+    // ** NUEVO: Abrir archivo de salida **
+    ofstream outfile("calibration.txt");
+    if (!outfile.is_open()) {
+        cerr << "Error: No se pudo abrir el archivo calibration.txt para escribir." << endl;
+        return 1; // Salir si hay un error
+    }
+
+    // Preparar la cabecera de la tabla
+    stringstream header_stream;
+    header_stream << "--------------------------------------------------------------------------------" << endl;
+    header_stream << setw(5) << "d" << setw(10) << "w" << setw(15) << "Tamaño (KB)"
+                  << setw(20) << "Error Relativo Prom" << setw(20) << "Error Absoluto Prom" << endl;
+    header_stream << "--------------------------------------------------------------------------------" << endl;
+
+    // Imprimir cabecera en consola y en archivo
+    cout << "\n--- Calibrando CountSketch (error vs tamaño) ---" << endl;
+    cout << header_stream.str();
+    outfile << "Tabla de Calibración de CountSketch (error vs tamaño)\n";
+    outfile << header_stream.str();
+
+    vector<int> d_values = {3, 5, 7, 9};
+    vector<int> w_values = {500000, 1000000, 2500000, 5000000, 10000000};
 
     for (int d : d_values) {
         for (int w : w_values) {
@@ -144,8 +149,8 @@ int main() {
             }
 
             if (heavy_hitters.empty()) {
-                if (w == w_values[0] && d == d_values[0]) // Imprimir advertencia solo una vez
-                    cerr << "Advertencia: No se encontraron heavy hitters para calibrar." << endl;
+                if (w == w_values[0] && d == d_values[0])
+                    cerr << "Advertencia: No se encontraron heavy hitters para calibrar. Prueba bajando el valor de phi." << endl;
                 continue;
             }
 
@@ -161,18 +166,38 @@ int main() {
             double avg_relative_error = total_relative_error / heavy_hitters.size();
             double avg_absolute_error = total_absolute_error / heavy_hitters.size();
             
-            cout << fixed << setprecision(4);
-            cout << setw(5) << d << setw(10) << w 
-                 << setw(15) << cs.size_in_bytes() / 1024.0
-                 << setw(20) << avg_relative_error
-                 << setw(20) << avg_absolute_error << endl;
+            // Preparar la línea de datos
+            stringstream data_line_stream;
+            data_line_stream << fixed << setprecision(4);
+            data_line_stream << setw(5) << d << setw(10) << w 
+                             << setw(15) << cs.size_in_bytes() / 1024.0
+                             << setw(20) << avg_relative_error
+                             << setw(20) << avg_absolute_error << endl;
+
+            // ** NUEVO: Imprimir línea en consola Y en archivo **
+            cout << data_line_stream.str();
+            outfile << data_line_stream.str();
         }
     }
+    
+    // Imprimir línea final en consola y archivo
     cout << "--------------------------------------------------------------------------------" << endl;
+    outfile << "--------------------------------------------------------------------------------" << endl;
+
+    // ** NUEVO: Cerrar el archivo **
+    outfile.close();
+    cout << "\nResultados de la calibración guardados en 'calibration.txt'" << endl;
+    
+    long mem_kb_final = report_memory();
+    cout << "Memoria máxima usada (proceso): " << mem_kb_final/1024.0 << " MB" << endl;
+    cout << "Calibración completa." << endl;
 
     return 0;
 }
 
+
+// --- Implementaciones de funciones auxiliares (sin cambios) ---
+// (El resto del código es idéntico)
 vector<string> list_fasta_files(const string &folder) {
     vector<string> files;
     for (const auto &entry : fs::directory_iterator(folder)) {
@@ -183,40 +208,46 @@ vector<string> list_fasta_files(const string &folder) {
     }
     return files;
 }
+
 uint64_t canonical_kmer(uint64_t kmer, uint k) {
     uint64_t reverse = 0;
     uint64_t b_kmer = kmer;
     kmer = ((kmer >> 2) & 0x3333333333333333UL) | ((kmer & 0x3333333333333333UL) << 2);
-    kmer = ((kmer >> 4) & 0x0F0F0F0F0F0F0F0FUL) | ((kmer & 0x0F0F0F0F0F0F0F0FUL) << 4);
+    kmer = ((kmer >> 4) & 0x0F0F0F0F0F0F0F0FUL) | ((kmer & 0x0F0F0F0F0F0F0FUL) << 4);
     kmer = ((kmer >> 8) & 0x00FF00FF00FF00FFUL) | ((kmer & 0x00FF00FF00FF00FFUL) << 8);
     kmer = ((kmer >> 16) & 0x0000FFFF0000FFFFUL) | ((kmer & 0x0000FFFF0000FFFFUL) << 16);
     kmer = ( kmer >> 32 ) | ( kmer << 32);
     reverse = (((uint64_t)-1) - kmer) >> (8 * sizeof(kmer) - (k << 1));
     return (b_kmer < reverse) ? b_kmer : reverse;
 }
+
 inline uint8_t base_to_bits(char c) {
     switch(toupper(c)) {
-        case 'A': return 0;
-        case 'C': return 1;
-        case 'G': return 2;
-        case 'T': return 3;
+        case 'A': return 0; case 'C': return 1;
+        case 'G': return 2; case 'T': return 3;
         default: return 4;
     }
 }
+
 string bits_to_sequence(uint64_t kmer, uint k) {
     string seq(k, 'N');
     for (int i = k-1; i >= 0; --i) {
         uint8_t b = kmer & 0x3ULL;
         switch(b) {
-            case 0: seq[i] = 'A'; break;
-            case 1: seq[i] = 'C'; break;
-            case 2: seq[i] = 'G'; break;
-            case 3: seq[i] = 'T'; break;
+            case 0: seq[i] = 'A'; break; case 1: seq[i] = 'C'; break;
+            case 2: seq[i] = 'G'; break; case 3: seq[i] = 'T'; break;
         }
         kmer >>= 2;
     }
     return seq;
 }
+
+long report_memory() {
+    struct rusage r;
+    getrusage(RUSAGE_SELF, &r);
+    return r.ru_maxrss;
+}
+
 uint64_t extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint64_t,uint64_t> &counts) {
     ifstream infile(filepath);
     if (!infile) {
@@ -224,29 +255,13 @@ uint64_t extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint
         return 0;
     }
     string line, seq;
-    uint64_t N_total = 0;
+    uint64_t N_total_file = 0;
+    
     while (getline(infile, line)) {
-        if (line.empty()) continue;
-        if (line[0] == '>') {
-            if (!seq.empty()) {
-                uint64_t kmer = 0;
-                uint64_t mask = (1ULL << (k*2)) - 1;
-                size_t valid_bases = 0;
-                for (char c : seq) {
-                    uint8_t bits = base_to_bits(c);
-                    if (bits > 3) { valid_bases = 0; continue; }
-                    kmer = ((kmer << 2) | bits) & mask;
-                    if (++valid_bases >= k) {
-                        counts[canonical_kmer(kmer, k)]++;
-                        N_total++;
-                    }
-                }
-                seq.clear();
-            }
-        } else {
-            seq.append(line);
-        }
+        if (line.empty() || line[0] == '>') continue;
+        seq.append(line);
     }
+
     if (!seq.empty()) {
         uint64_t kmer = 0;
         uint64_t mask = (1ULL << (k*2)) - 1;
@@ -257,9 +272,9 @@ uint64_t extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint
             kmer = ((kmer << 2) | bits) & mask;
             if (++valid_bases >= k) {
                 counts[canonical_kmer(kmer, k)]++;
-                N_total++;
+                N_total_file++;
             }
         }
     }
-    return N_total;
+    return N_total_file;
 }

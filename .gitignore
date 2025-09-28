@@ -11,3 +11,5 @@ output/
 *.gch
 *.txt
 *.csv
+*.cs
+*.ej
