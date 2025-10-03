@@ -5,8 +5,9 @@
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
-#include <sys/resource.h> 
 #include <cmath>
+#include <random>
+#include "towersketch.cpp"
 
 namespace fs = std::filesystem;
 using namespace std;
@@ -25,14 +26,12 @@ vector<string> list_fasta_files(const string &folder) {
 uint64_t canonical_kmer(uint64_t kmer, uint k = 31) {
     uint64_t reverse = 0;
     uint64_t b_kmer = kmer;
-
     kmer = ((kmer >> 2)  & 0x3333333333333333UL) | ((kmer & 0x3333333333333333UL) << 2);
     kmer = ((kmer >> 4)  & 0x0F0F0F0F0F0F0F0FUL) | ((kmer & 0x0F0F0F0F0F0F0F0FUL) << 4);
     kmer = ((kmer >> 8)  & 0x00FF00FF00FF00FFUL) | ((kmer & 0x00FF00FF00FF00FFUL) << 8);
     kmer = ((kmer >> 16) & 0x0000FFFF0000FFFFUL) | ((kmer & 0x0000FFFF0000FFFFUL) << 16);
     kmer = ( kmer >> 32 ) | ( kmer << 32);
     reverse = (((uint64_t)-1) - kmer) >> (8 * sizeof(kmer) - (k << 1));
-
     return (b_kmer < reverse) ? b_kmer : reverse;
 }
 
@@ -67,7 +66,6 @@ void extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint64_t
         cerr << "No se pudo abrir: " << filepath << endl;
         return;
     }
-
     string line, seq;
     while (getline(infile, line)) {
         if (line.empty()) continue;
@@ -91,7 +89,6 @@ void extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint64_t
             for (char &c : line) seq.push_back(toupper(c));
         }
     }
-
     if (!seq.empty()) {
         uint64_t kmer = 0;
         size_t bases = 0;
@@ -108,12 +105,12 @@ void extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint64_t
     }
 }
 
-void save_heavy_hitters_phi(
-    const unordered_map<uint64_t,uint64_t> &counts, uint k,
-    double phi, const string &out_folder)
+void save_approx_kmers(
+    const unordered_map<uint64_t,uint64_t> &counts, 
+    TowerSketchCMCU &sketch, uint k, double phi, const string &out_folder)
 {
     fs::create_directories(out_folder);
-    string filename = out_folder + "/HH_k" + to_string(k) + ".txt";
+    string filename = out_folder + "/TS_k" + to_string(k) + ".txt";
     ofstream out(filename);
 
     uint64_t N = 0;
@@ -121,74 +118,53 @@ void save_heavy_hitters_phi(
     uint64_t threshold = static_cast<uint64_t>(phi * N);
     size_t hh_count = 0;
 
-    out << "#Heavy hitters k=" << k << " (threshold=" << threshold << ")\n";
+    out << "#Heavy hitters TowerSketch k=" << k << " (threshold=" << threshold << ")\n";
     for (auto &[kmer, c] : counts) {
-        if (c >= threshold) {
-            out << bits_to_sequence(kmer, k) << "\t" << c << "\n";
+        uint32_t est = sketch.estimate(kmer, k);
+        if (est >= threshold) {
+            out << bits_to_sequence(kmer, k) << "\t" << est << "\n";
             hh_count++;
         }
     }
-
-    cout << "  [Phi=" << phi << "] k=" << k
+    cout << "  [TowerSketch] k=" << k
          << " | Total k-mers=" << N
          << " | HH encontrados=" << hh_count
          << " | Threshold=" << threshold
          << " | Guardado en: " << filename << endl;
 }
 
-long report_memory() {
-    struct rusage r;
-    getrusage(RUSAGE_SELF, &r);
-    return r.ru_maxrss;
-}
-
-
-int main() {
-    string folder = "Genomas/";
+int main(int argc, char* argv[]) {
+    if (argc < 3) {
+        cerr << "Uso: " << argv[0] << " <carpeta_genomas> <k>\n";
+        return 1;
+    }
+    string folder = argv[1];
+    size_t k = std::stoi(argv[2]);
     vector<string> fasta_files = list_fasta_files(folder);
-    cout << "Archivos encontrados: " << fasta_files.size() << endl;
+  
+    random_device rd;
+    mt19937 g(rd());
+    shuffle(fasta_files.begin(), fasta_files.end(), g);
+    vector<string> training_files(fasta_files.begin(), fasta_files.begin() + 50);
 
-    unordered_map<uint64_t,uint64_t> counts21, counts31;
-    size_t file_counter = 0;
-    for (const auto &fp : fasta_files) {
-        file_counter++;
-        cout << "------------------------------------------------------------" << endl;
-        cout << "Procesando archivo " << file_counter << "/" << fasta_files.size() << ": " << fp << endl;
+    cout << "Genomas seleccionados para entrenamiento:\n";
+    for (const auto& file : training_files) cout << "  " << file << "\n";
 
-        size_t before21 = counts21.size();
-        size_t before31 = counts31.size();
-
-        extract_kmers_bits(fp, 21, counts21);
-        extract_kmers_bits(fp, 31, counts31);
-
-        cout << "  -> K=21: Total k-mers únicos hasta ahora: " << counts21.size() << " (+" << counts21.size()-before21 << ")" << endl;
-        cout << "  -> K=31: Total k-mers únicos hasta ahora: " << counts31.size() << " (+" << counts31.size()-before31 << ")" << endl;
-
-        long mem_kb = report_memory();
-        cout << "  -> Memoria actual (proceso): " << mem_kb/1024.0 << " MB" << endl;
+    unordered_map<uint64_t, uint64_t> counts;
+    for (const auto& file : training_files) {
+        cout << "Procesando: " << file << endl;
+        extract_kmers_bits(file, k, counts);
     }
+    cout << "Total de k-mers distintos: " << counts.size() << endl;
+    uint32_t d = 9, w = 10000000, levels = 6;
+    TowerSketchCMCU sketch(d, w, levels);
 
-    // Calcular memoria estimada de las estructuras
-    size_t memory_counts21 = counts21.size() * (sizeof(uint64_t) + sizeof(uint64_t));
-    size_t memory_counts31 = counts31.size() * (sizeof(uint64_t) + sizeof(uint64_t));
-    cout << "------------------------------------------------------------" << endl;
-    cout << "Memoria estimada de counts21: " << memory_counts21 / 1024.0 / 1024.0 << " MB" << endl;
-    cout << "Memoria estimada de counts31: " << memory_counts31 / 1024.0 / 1024.0 << " MB" << endl;
-
-    // --- Múltiples phi ---
-    vector<double> phi_values = {1e-6};
-    for (double phi : phi_values) {
-        cout << "============================================================" << endl;
-        cout << "Guardando HH para phi=" << phi << endl;
-
-        save_heavy_hitters_phi(counts21, 21, phi, "output/k21/phi" + to_string(int(-log10(phi))));
-        save_heavy_hitters_phi(counts31, 31, phi, "output/k31/phi" + to_string(int(-log10(phi))));
+    for (const auto& [kmer, freq] : counts) {
+        for (uint64_t i = 0; i < freq; ++i) {
+            sketch.insert(kmer, k);
+        }
     }
-
-    long mem_kb_final = report_memory();
-    cout << "------------------------------------------------------------" << endl;
-    cout << "Memoria máxima usada (proceso): " << mem_kb_final/1024.0 << " MB" << endl;
-    cout << "Procesamiento completo." << endl;
-
+    double phi = 1e-6;
+    save_approx_kmers(counts, sketch, k, phi, "output/towersketch/k" + to_string(k) + "/phi" + to_string(int(-log10(phi))));
     return 0;
 }
