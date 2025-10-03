@@ -2,7 +2,6 @@
 Genomas/
 Murmur/
 output/
-.vscode/
 
 # Ignorar archivos compilados de C++
 *.o
