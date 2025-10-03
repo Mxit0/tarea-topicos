@@ -13,9 +13,6 @@
 namespace fs = std::filesystem;
 using namespace std;
 
-// ====================================================================
-// --- CLASE COUNTSKETCH (Sin cambios) ---
-// ====================================================================
 class CountSketch {
 private:
     int d; 
@@ -67,9 +64,6 @@ public:
 };
 
 
-// ====================================================================
-// --- FUNCIONES AUXILIARES ---
-// ====================================================================
 vector<string> list_fasta_files(const string &folder);
 uint64_t canonical_kmer(uint64_t kmer, uint k);
 inline uint8_t base_to_bits(char c);
@@ -78,19 +72,15 @@ long report_memory();
 uint64_t extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint64_t,uint64_t> &counts);
 
 
-// ====================================================================
-// --- PROGRAMA PRINCIPAL (para Calibración y guardado en archivo) ---
-// ====================================================================
 int main() {
     string folder = "Genomas/";
     vector<string> fasta_files = list_fasta_files(folder);
     cout << "Archivos encontrados: " << fasta_files.size() << endl;
 
-    size_t subset_size = min((size_t)25, fasta_files.size()); // Aumentado a 25
+    size_t subset_size = min((size_t)25, fasta_files.size()); 
     vector<string> subset_files(fasta_files.begin(), fasta_files.begin() + subset_size);
     cout << "Procesando subconjunto de " << subset_files.size() << " archivos para ground truth y calibración." << endl;
 
-    // --- PASO 1: Generar Ground Truth ---
     unordered_map<uint64_t, uint64_t> ground_truth_counts;
     uint64_t N_total = 0;
     const size_t k = 31;
@@ -102,7 +92,6 @@ int main() {
     }
     cout << "Ground Truth generado. Total de k-mers: " << N_total << ". K-mers unicos: " << ground_truth_counts.size() << endl;
 
-    // Identificar los Heavy Hitters para la evaluación
     double phi = 1e-6;
     uint64_t threshold = static_cast<uint64_t>(phi * N_total);
     if (threshold < 2) threshold = 2;
@@ -115,23 +104,18 @@ int main() {
     }
     cout << "Se usarán " << heavy_hitters.size() << " heavy hitters reales (frec >= " << threshold << ") para la calibración." << endl;
 
-    // --- PASO 2: Calibración de CountSketch ---
-
-    // ** NUEVO: Abrir archivo de salida **
     ofstream outfile("calibration.txt");
     if (!outfile.is_open()) {
         cerr << "Error: No se pudo abrir el archivo calibration.txt para escribir." << endl;
-        return 1; // Salir si hay un error
+        return 1; 
     }
 
-    // Preparar la cabecera de la tabla
     stringstream header_stream;
     header_stream << "--------------------------------------------------------------------------------" << endl;
     header_stream << setw(5) << "d" << setw(10) << "w" << setw(15) << "Tamaño (KB)"
                   << setw(20) << "Error Relativo Prom" << setw(20) << "Error Absoluto Prom" << endl;
     header_stream << "--------------------------------------------------------------------------------" << endl;
 
-    // Imprimir cabecera en consola y en archivo
     cout << "\n--- Calibrando CountSketch (error vs tamaño) ---" << endl;
     cout << header_stream.str();
     outfile << "Tabla de Calibración de CountSketch (error vs tamaño)\n";
@@ -166,7 +150,6 @@ int main() {
             double avg_relative_error = total_relative_error / heavy_hitters.size();
             double avg_absolute_error = total_absolute_error / heavy_hitters.size();
             
-            // Preparar la línea de datos
             stringstream data_line_stream;
             data_line_stream << fixed << setprecision(4);
             data_line_stream << setw(5) << d << setw(10) << w 
@@ -174,17 +157,14 @@ int main() {
                              << setw(20) << avg_relative_error
                              << setw(20) << avg_absolute_error << endl;
 
-            // ** NUEVO: Imprimir línea en consola Y en archivo **
             cout << data_line_stream.str();
             outfile << data_line_stream.str();
         }
     }
     
-    // Imprimir línea final en consola y archivo
     cout << "--------------------------------------------------------------------------------" << endl;
     outfile << "--------------------------------------------------------------------------------" << endl;
 
-    // ** NUEVO: Cerrar el archivo **
     outfile.close();
     cout << "\nResultados de la calibración guardados en 'calibration.txt'" << endl;
     
@@ -196,8 +176,6 @@ int main() {
 }
 
 
-// --- Implementaciones de funciones auxiliares (sin cambios) ---
-// (El resto del código es idéntico)
 vector<string> list_fasta_files(const string &folder) {
     vector<string> files;
     for (const auto &entry : fs::directory_iterator(folder)) {
