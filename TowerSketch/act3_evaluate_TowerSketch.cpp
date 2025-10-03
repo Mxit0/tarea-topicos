@@ -25,6 +25,28 @@ int main() {
     auto real = load_kmers("HH/HH_k31.txt");
     auto approx = load_kmers("output/towersketch/k31/phi6/TS_k31.txt");
 
+    int tp = 0, fp = 0, fn = 0;
+    for (const auto& [kmer, _] : approx) {
+        if (real.count(kmer)) tp++;
+        else fp++;
+    }
+    for (const auto& [kmer, _] : real) {
+        if (!approx.count(kmer)) fn++;
+    }
+    double precision = tp ? (double)tp / (tp + fp) : 0.0;
+    double recall = tp ? (double)tp / (tp + fn) : 0.0;
+    double f1 = (precision + recall) ? 2 * precision * recall / (precision + recall) : 0.0;
+
+    cout << "\n--- Métricas de candidatos ---\n";
+    cout << "True Positives:  " << tp << endl;
+    cout << "False Positives: " << fp << endl;
+    cout << "False Negatives: " << fn << endl;
+    cout << "Precision:       " << precision << endl;
+    cout << "Recall:          " << recall << endl;
+    cout << "F1 Score:        " << f1 << endl;
+
+//------------------------------------------------------//
+
     double total_abs_err = 0, total_rel_err = 0;
     int count = 0;
 
@@ -50,25 +72,5 @@ int main() {
 
     cout << "\nError absoluto promedio: " << (total_abs_err / count) << endl;
     cout << "Error relativo promedio: " << (total_rel_err / count) << endl;
-
-    int tp = 0, fp = 0, fn = 0;
-    for (const auto& [kmer, _] : approx) {
-        if (real.count(kmer)) tp++;
-        else fp++;
-    }
-    for (const auto& [kmer, _] : real) {
-        if (!approx.count(kmer)) fn++;
-    }
-    double precision = tp ? (double)tp / (tp + fp) : 0.0;
-    double recall = tp ? (double)tp / (tp + fn) : 0.0;
-    double f1 = (precision + recall) ? 2 * precision * recall / (precision + recall) : 0.0;
-
-    cout << "\n--- Métricas de candidatos ---\n";
-    cout << "True Positives:  " << tp << endl;
-    cout << "False Positives: " << fp << endl;
-    cout << "False Negatives: " << fn << endl;
-    cout << "Precision:       " << precision << endl;
-    cout << "Recall:          " << recall << endl;
-    cout << "F1 Score:        " << f1 << endl;
     return 0;
 }

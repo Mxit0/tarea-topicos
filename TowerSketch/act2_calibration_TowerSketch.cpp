@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <iomanip>
 #include "towersketch.cpp"
 
 namespace fs = std::filesystem;
@@ -43,21 +44,6 @@ inline uint8_t base_to_bits(char c) {
         case 'T': return 3;
         default: return 4; 
     }
-}
-
-string bits_to_sequence(uint64_t kmer, uint k) {
-    string seq(k, 'N');
-    for (int i = k-1; i >= 0; --i) {
-        uint8_t b = kmer & 0x3ULL;
-        switch(b) {
-            case 0: seq[i] = 'A'; break;
-            case 1: seq[i] = 'C'; break;
-            case 2: seq[i] = 'G'; break;
-            case 3: seq[i] = 'T'; break;
-        }
-        kmer >>= 2;
-    }
-    return seq;
 }
 
 void extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint64_t,uint64_t> &counts) {
@@ -105,66 +91,70 @@ void extract_kmers_bits(const string &filepath, size_t k, unordered_map<uint64_t
     }
 }
 
-void save_approx_kmers(
-    const unordered_map<uint64_t,uint64_t> &counts, 
-    TowerSketchCMCU &sketch, uint k, double phi, const string &out_folder)
-{
-    fs::create_directories(out_folder);
-    string filename = out_folder + "/TS_k" + to_string(k) + ".txt";
-    ofstream out(filename);
+size_t sketch_size_bytes(uint32_t d, uint32_t w, uint32_t levels) {
 
-    uint64_t N = 0;
-    for (auto &[kmer, c] : counts) N += c;
-    uint64_t threshold = static_cast<uint64_t>(phi * N);
-    size_t hh_count = 0;
-
-    out << "#Heavy hitters TowerSketch k=" << k << " (threshold=" << threshold << ")\n";
-    for (auto &[kmer, c] : counts) {
-        uint32_t est = sketch.estimate(kmer, k);
-        if (est >= threshold) {
-            out << bits_to_sequence(kmer, k) << "\t" << est << "\n";
-            hh_count++;
-        }
-    }
-    cout << "  [TowerSketch] k=" << k
-         << " | Total k-mers=" << N
-         << " | HH encontrados=" << hh_count
-         << " | Threshold=" << threshold
-         << " | Guardado en: " << filename << endl;
+    return size_t(d) * size_t(w) * size_t(levels) * sizeof(uint32_t);
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 3) {
-        cerr << "Uso: " << argv[0] << " <carpeta_genomas> <k>\n";
+    string folder = "Genomas/";
+    size_t k = 31;
+
+    vector<string> fasta_files = list_fasta_files(folder);
+    if (fasta_files.size() < 25) {
+        cerr << "Se requieren al menos 25 archivos fasta en la carpeta.\n";
         return 1;
     }
-    string folder = argv[1];
-    size_t k = std::stoi(argv[2]);
-    vector<string> fasta_files = list_fasta_files(folder);
-  
+
     random_device rd;
     mt19937 g(rd());
     shuffle(fasta_files.begin(), fasta_files.end(), g);
-    vector<string> training_files(fasta_files.begin(), fasta_files.begin() + 50);
-
-    cout << "Genomas seleccionados para entrenamiento:\n";
-    for (const auto& file : training_files) cout << "  " << file << "\n";
+    vector<string> sample_files(fasta_files.begin(), fasta_files.begin() + 25);
 
     unordered_map<uint64_t, uint64_t> counts;
-    for (const auto& file : training_files) {
-        cout << "Procesando: " << file << endl;
+    for (const auto& file : sample_files) {
         extract_kmers_bits(file, k, counts);
     }
-    cout << "Total de k-mers distintos: " << counts.size() << endl;
-    uint32_t d = 9, w = 10000000, levels = 6;
-    TowerSketchCMCU sketch(d, w, levels);
 
-    for (const auto& [kmer, freq] : counts) {
-        for (uint64_t i = 0; i < freq; ++i) {
-            sketch.insert(kmer, k);
+    vector<uint32_t> d_values = {5, 7, 9};
+    vector<uint32_t> w_values = {2500000, 5000000, 10000000};
+    vector<uint32_t> levels_values = {5, 6, 7};
+
+    cout << "---------------------------------------------------------------------------------------------\n";
+    cout << "    d         w   levels   Tamaño (KB) Error Relativo Prom Error Absoluto Prom\n";
+    cout << "---------------------------------------------------------------------------------------------\n";
+    cout << fixed << setprecision(4);
+
+    for (auto d : d_values) {
+        for (auto w : w_values) {
+            for (auto levels : levels_values) {
+                TowerSketchCMCU sketch(d, w, levels);
+                for (const auto& [kmer, freq] : counts) {
+                    for (uint64_t i = 0; i < freq; ++i) {
+                        sketch.insert(kmer, k);
+                    }
+                }
+                double total_abs_err = 0, total_rel_err = 0;
+                int n = 0;
+                for (const auto& [kmer, real_freq] : counts) {
+                    uint32_t est = sketch.estimate(kmer, k);
+                    double abs_err = abs((double)est - (double)real_freq);
+                    double rel_err = real_freq > 0 ? abs_err / real_freq : 0.0;
+                    total_abs_err += abs_err;
+                    total_rel_err += rel_err;
+                    n++;
+                }
+                double mean_abs_err = n ? total_abs_err / n : 0.0;
+                double mean_rel_err = n ? total_rel_err / n : 0.0;
+                double size_kb = sketch_size_bytes(d, w, levels) / 1024.0;
+
+                cout << setw(5) << d << setw(11) << w << setw(9) << levels
+                     << setw(14) << size_kb
+                     << setw(21) << mean_rel_err
+                     << setw(21) << mean_abs_err << endl;
+            }
         }
     }
-    double phi = 1e-6;
-    save_approx_kmers(counts, sketch, k, phi, "output/towersketch/k" + to_string(k) + "/phi" + to_string(int(-log10(phi))));
+    cout << "---------------------------------------------------------------------------------------------\n";
     return 0;
 }
