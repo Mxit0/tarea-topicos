@@ -1,13 +1,2 @@
 # Ignorar carpetas de datos y librerías
 Genomas/
-Murmur/
-output/
-
-# Ignorar archivos compilados de C++
-*.o
-*.exe
-*.out
-*.obj
-*.gch
-*.txt
-*.csv
