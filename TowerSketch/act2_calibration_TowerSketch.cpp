@@ -98,7 +98,7 @@ size_t sketch_size_bytes(uint32_t d, uint32_t w, uint32_t levels) {
 
 int main(int argc, char* argv[]) {
     string folder = "Genomas/";
-    size_t k = 31;
+    size_t k = 21;
 
     vector<string> fasta_files = list_fasta_files(folder);
     if (fasta_files.size() < 25) {
