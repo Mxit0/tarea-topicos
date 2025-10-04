@@ -83,7 +83,7 @@ int main() {
 
     unordered_map<uint64_t, uint64_t> ground_truth_counts;
     uint64_t N_total = 0;
-    const size_t k = 31;
+    const size_t k = 21;
 
     cout << "\n--- Generando Ground Truth (k=" << k << ") ---" << endl;
     for (const auto &fp : subset_files) {
